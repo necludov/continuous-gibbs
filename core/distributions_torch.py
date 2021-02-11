@@ -1,74 +1,49 @@
-import numpy as np
-
+import torch
 
 class IsingModel2D:
-    def __init__(self, h, w, T=1.0):
-        self.h, self.w = h, w
-        self.shape = np.array([self.h, self.w])
-        self.dims = 2*np.ones([self.h, self.w], dtype=int)
-        self.T = T
-        
-    def get_log_prob(self, state):
-        '''assumes the state to be given in {0,1}'''
-        spins = state*2 - 1
-        h, w = self.h, self.w
-        energy = 0.0
-        energy += np.sum(spins[:,:w-1]*spins[:,1:])
-        energy += np.sum(spins[:h-1,:]*spins[1:,:])
-        return -energy/self.T
-        
-    def get_cond_probs(self, state):
-        '''assumes the state to be given in {0,1}'''
-        spins = state*2 - 1
-        h, w = self.h, self.w
-        cond_energy = np.zeros_like(spins)
-        cond_energy[:,:w-1] += spins[:,1:]
-        cond_energy[:,1:] += spins[:,:w-1]
-        cond_energy[:h-1,:] += spins[1:,:]
-        cond_energy[1:,:] += spins[:h-1,:]
-        cond_log_prob = -cond_energy/self.T - np.logaddexp(cond_energy/self.T,-cond_energy/self.T)
-        cond_prob = np.exp(cond_log_prob)
-        cond_prob = cond_prob*(spins > 0) + (1-cond_prob)*(spins < 0)
-        return cond_prob
-
-
-class IsingMNIST:
-    def __init__(self, img, beta=1.0, eta=2.1):
-        self.h, self.w = img.shape
-        self.shape = np.array([self.h, self.w])
-        self.dims = 2*np.ones(self.h*self.w, dtype=int)
-        self.img = img*2 - 1
+    def __init__(self, state, target, beta=1.0, eta=2.1):
+        self.h, self.w = target.shape
+        self.device = target.device
+        self.img = target*2 - 1
+        self.spins = state*2 - 1
+        self.dims = 2*torch.ones_like(self.spins, dtype=torch.int).to(self.device)
         self.eta = eta
         self.beta = beta
         
-    def get_log_prob(self, state):
-        '''assumes the state to be given in {0,1}'''
-        h, w = self.h, self.w
-        spins = state.reshape([h,w])*2 - 1
-        energy = -self.beta*np.sum(spins[:,:w-1]*spins[:,1:])
-        energy += -self.beta*np.sum(spins[:h-1,:]*spins[1:,:])
-        energy += -self.eta*np.sum(spins*self.img)
+    def get_state(self):
+        return (self.spins > 0).int()
+    
+    def set_state(self, state):
+        self.spins = (2*state-1).to(self.device)
+        
+    def get_log_prob(self):
+        w,h = self.w, self.h
+        energy = -self.beta*torch.sum(self.spins[:,:w-1]*self.spins[:,1:])
+        energy += -self.beta*torch.sum(self.spins[:h-1,:]*self.spins[1:,:])
+        energy += -self.eta*torch.sum(self.spins*self.img)
         return -energy
         
-    def get_cond_probs(self, state):
-        '''assumes the state to be given in {0,1}'''
-        h, w = self.h, self.w
-        spins = state.reshape([h,w])*2 - 1
-        cond_energy = np.zeros_like(spins)
-        cond_energy[:,:w-1] += spins[:,1:]
-        cond_energy[:,1:] += spins[:,:w-1]
-        cond_energy[:h-1,:] += spins[1:,:]
-        cond_energy[1:,:] += spins[:h-1,:]
+    def get_cond_prob(self):
+        w,h = self.w, self.h
+        cond_energy = torch.zeros_like(self.spins).to(self.device)
+        cond_energy[:,:w-1] += self.spins[:,1:]
+        cond_energy[:,1:] += self.spins[:,:w-1]
+        cond_energy[:h-1,:] += self.spins[1:,:]
+        cond_energy[1:,:] += self.spins[:h-1,:]
         cond_energy = -self.beta*cond_energy - self.eta*self.img
-        cond_log_prob = -cond_energy - np.logaddexp(cond_energy,-cond_energy)
-        cond_prob = np.exp(cond_log_prob)
-        cond_prob = cond_prob*(spins > 0) + (1-cond_prob)*(spins < 0)
-        return cond_prob.flatten()
+        cond_log_prob = -cond_energy - torch.logaddexp(cond_energy,-cond_energy)
+        cond_prob = torch.exp(cond_log_prob)
+        cond_prob = cond_prob*(self.spins > 0) + (1-cond_prob)*(self.spins < 0)
+        return cond_prob
+    
+    def get_cond_dist(self, dim):
+        """returns p(x_dim|x_rest)"""
 
 
 class Discrete2D:
     def __init__(self, probs):
         self.h, self.w = probs.shape
+        self.device = probs.device
         self.dims = torch.tensor([self.h, self.w]).long().to(self.device)
         self.probs = probs
         self.state = torch.tensor([0, 0]).long().to(self.device)
@@ -96,7 +71,6 @@ class Discrete2D:
         cond_dist /= torch.sum(cond_dist)
         return cond_dist
     
-
 class Discrete2DBatch:
     def __init__(self, probs):
         self.h, self.w = probs.shape

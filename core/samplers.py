@@ -1,75 +1,68 @@
-import torch
+import numpy as np
 
 class DGibbs:
     def __init__(self, distribution, v_coeffs=None):
-        assert hasattr(distribution, 'get_log_prob')
-        assert hasattr(distribution, 'get_state')
-        assert hasattr(distribution, 'set_state')
-        assert hasattr(distribution, 'dims')
-        assert hasattr(distribution, 'get_cond_prob')
-        assert hasattr(distribution, 'get_cond_dist')
         self.dist = distribution
-        self.device = distribution.device
-        self.dims = self.dist.dims.flatten()
-        self.state = self.dist.get_state().clone().flatten()
-        self.x = self.state.clone()
+        self.dims = self.dist.dims
         self.v_coeffs = v_coeffs
-        if self.v_coeffs is None:
-            self.v = torch.ones_like(self.state).to(self.device)
-        else:
-            self.v = self.v_coeffs.to(self.device)
-        self.v = self.v/self.dist.get_cond_prob().flatten()
-        self.dist_to_border = torch.ones_like(self.v)
-        self.samples = []
-        self.weights = []
-        self.trajectory = [self.state.clone()]
+        
+    def initialize(self, state0):
+        self.state = state0.copy()
+        self.x = self.state.copy()
+        self.v = np.ones_like(self.state)
+        if self.v_coeffs is not None:
+            self.v = self.v_coeffs
+        self.v = self.v/self.dist.get_cond_probs(self.state)
+        self.dist_to_border = np.ones_like(self.v)
         
     def iterate(self):
-        # evaluate time
+        # evaluate weight of the current state
         time_until_border = self.dist_to_border/self.v
-        iterate_time = torch.min(time_until_border)
-        change_dim = torch.argmin(time_until_border)
+        iterate_time = np.min(time_until_border)
+        change_dim = np.argmin(time_until_border)
+        output_state = self.state.copy()
+        output_weight = iterate_time
         # update coordinates
         self.x = (self.x + self.v*iterate_time) % self.dims
-        self.state[change_dim] = (self.state[change_dim]+1) % self.dims[change_dim]
+        self.x = (self.state[change_dim]+1) % self.dims[change_dim]
         self.dist_to_border = self.dist_to_border - self.v*iterate_time
         self.dist_to_border[change_dim] = 1.0
-        # put into samples
-        self.samples.append(self.state.clone().cpu())
-        self.weights.append(iterate_time.cpu())
-        self.trajectory.append(self.x.clone().cpu())
         # update state
-        self.dist.set_state(self.state.reshape(self.dist.dims.shape).clone())
-        if self.v_coeffs is None:
-            self.v = torch.ones_like(self.state).to(self.device)
-        else:
-            self.v = self.v_coeffs.to(self.device)
-        self.v = self.v/self.dist.get_cond_prob().flatten()
+        self.state[change_dim] = (self.state[change_dim]+1) % self.dims[change_dim]
+        self.v = np.ones_like(self.state)
+        if self.v_coeffs is not None:
+            self.v = self.v_coeffs
+        self.v = self.v/self.dist.get_cond_probs(self.state)
+        return output_state, output_weight
+    
+    def iterate_n(self, n):
+        assert n > 0
+        for _ in range(n-1):
+            self.iterate()
+        return self.iterate()
         
 class Gibbs:
     def __init__(self, distribution):
-        assert hasattr(distribution, 'get_log_prob')
-        assert hasattr(distribution, 'get_state')
-        assert hasattr(distribution, 'set_state')
-        assert hasattr(distribution, 'dims')
-        assert hasattr(distribution, 'get_cond_prob')
-        assert hasattr(distribution, 'get_cond_dist')
         self.dist = distribution
-        self.device = self.dist.device
         self.dims = self.dist.dims.flatten()
-        self.state = self.dist.get_state().clone().flatten()
-        self.samples = []
-        self.weights = []
-        self.change_dim = 0
         
+    def initialize(self, state0):
+        self.state = state0.copy().flatten()
+        self.change_dim = 0
+
     def iterate(self):
-        # update the current dimension
-        cond_dist = self.dist.get_cond_dist(self.change_dim)
-        cond_dist = torch.distributions.categorical.Categorical(cond_dist.flatten())
-        self.state[self.change_dim] = cond_dist.sample()
-        # put into samples
-        self.samples.append(self.state.clone())
-        self.weights.append(torch.tensor(1.0))
+        output_state = self.state.copy()
+        cond_prob = self.dist.get_cond_probs(self.state.reshape(self.dist.shape)).flatten()
+        # flip the state with 1-its probability
+        u = np.random.uniform()
+        if u > cond_prob[self.change_dim]:
+            self.state[self.change_dim] = (self.state[self.change_dim]+1) % self.dims[self.change_dim]
         # update state
-        self.dist.set_state(self.state.reshape(self.dist.dims.shape).clone())
-        self.change_dim = (self.change_dim + 1) % self.state.shape[0]
+        self.change_dim = (self.change_dim + 1) % len(self.dims)
+        return output_state, 1.0
+    
+    def iterate_n(self, n):
+        assert n > 0
+        for _ in range(n-1):
+            self.iterate()
+        return self.iterate()
